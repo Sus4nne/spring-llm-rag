@@ -1,15 +1,15 @@
 package nl.pieterse.ai;
 
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingClient;
 import org.springframework.ai.ollama.OllamaChatClient;
-import org.springframework.ai.prompt.Prompt;
-import org.springframework.ai.prompt.SystemPromptTemplate;
-import org.springframework.ai.prompt.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.reader.ExtractedTextFormatter;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
-import org.springframework.ai.retriever.VectorStoreRetriever;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.ai.vectorstore.PgVectorStore;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -40,17 +40,14 @@ public class AiApplication {
     }
 
     @Bean
-    VectorStoreRetriever vectorStoreRetriever(VectorStore vs) {
-        return new VectorStoreRetriever(vs, 4, 0.75);
-    }
-
-    @Bean
     TokenTextSplitter tokenTextSplitter() {
         return new TokenTextSplitter();
     }
 
     static void init(VectorStore vectorStore, JdbcTemplate template, Resource pdfResource)
             throws Exception {
+
+        System.out.println("Initializing the vector store...");
 
         System.out.println("Deleting all vectors from the vector store...");
         template.update("delete from vector_store");
@@ -66,6 +63,7 @@ public class AiApplication {
         var textSplitter = new TokenTextSplitter();
         System.out.println("Storing vectors in the vector store...");
         vectorStore.accept(textSplitter.apply(pdfReader.get()));
+        System.out.println("Vector store initialized.");
 
     }
 
@@ -76,10 +74,10 @@ public class AiApplication {
             JdbcTemplate template,
             @Value("file:///Users/susannepieterse/Downloads/Handreiking-2023+Bescherm+domeinnamen+tegen+phishing+2.0.pdf") Resource pdfResource) {
         return args -> {
-            System.out.println("Beginning the chat with Ollama...");
-
+            System.out.println("Starting the application...");
             init(vectorStore, template, pdfResource);
 
+            System.out.println("Beginning the chat with Ollama...");
             var response = chatBot.chat("Wat adviseert het NCSC om te doen tegen phishing?");
 
             System.out.println(Map.of("response", response));
@@ -105,17 +103,17 @@ class ChatBot {
             
             """;
 
-    private  final OllamaChatClient chatClient;
+    private final OllamaChatClient chatClient;
 
-    private final VectorStoreRetriever vsr;
+    private final VectorStore vectorStore;
 
-    ChatBot(OllamaChatClient chatClient, VectorStoreRetriever vsr) {
+    ChatBot(OllamaChatClient chatClient, VectorStore vectorStore) {
         this.chatClient = chatClient;
-        this.vsr = vsr;
+        this.vectorStore = vectorStore;
     }
 
-    public String chat (String message) {
-        var listOfSimilarDocuments = vsr.retrieve(message);
+    public AssistantMessage chat (String message) {
+        var listOfSimilarDocuments = vectorStore.similaritySearch(message);
         var documents = listOfSimilarDocuments
                 .stream()
                 .map(Document::getContent)
@@ -124,7 +122,7 @@ class ChatBot {
                 .createMessage(Map.of("documents", documents));
         var userMessage = new UserMessage(message);
         var prompt = new Prompt(List.of(systemMessage, userMessage));
-        var aiResponse = chatClient.generate(prompt);
-        return aiResponse.getGeneration().getContent();
+        var aiResponse = chatClient.call(prompt);
+        return aiResponse.getResult().getOutput();
     }
 }
